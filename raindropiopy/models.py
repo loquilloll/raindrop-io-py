@@ -208,18 +208,18 @@ class Collection(BaseModel):
     title: str
     user: UserRef
 
-    access: Access | None
+    access: Access | None = None
     collaborators: list[Any] | None = Field(default_factory=list)
     color: str | None = None
     count: NonNegativeInt
     cover: list[str] | None = Field(default_factory=list)
-    created: datetime | None
+    created: datetime | None = None
     expanded: bool = False
-    last_update: datetime | None
-    parent: int | None  # Id of parent collection (if any)
-    public: bool | None
-    sort: int | None
-    view: View | None
+    last_update: datetime | None = None
+    parent: int | None = None  # Id of parent collection (if any)
+    public: bool | None = None
+    sort: int | None = None
+    view: View | None = None
 
     # Per API Doc: "Our API response could contain other fields, not described above.
     # It's unsafe to use them in your integration! They could be removed or renamed at any time."
@@ -227,7 +227,7 @@ class Collection(BaseModel):
 
     # Used to convert parent reference's of sub-collections to simply id's of the respective parent collection.
     @validator("parent", pre=True, allow_reuse=True)
-    def _extract_parent_id(cls, v):
+    def _extract_parent_id(cls, v):  # noqa: N805, pylint: disable=no-self-argument
         return _resolve_parent_reference(v)
 
     @model_validator(mode="before")
