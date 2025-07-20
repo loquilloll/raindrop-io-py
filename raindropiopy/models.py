@@ -15,16 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from pydantic import (
-    BaseModel,
-    EmailStr,
-    Field,
-    HttpUrl,
-    NonNegativeInt,
-    PositiveInt,
-    root_validator,
-    validator,
-)
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, NonNegativeInt, PositiveInt, model_validator, validator
 
 from .api import T_API  # ie. for typing only...
 
@@ -58,7 +49,7 @@ def _collect_other_attributes(cls, v):
     skip_attrs = "_id"  # We don't need to store alias attributes again (pydantic will take care of)
     v["other"] = dict()
     for attr, value in v.items():
-        if value and attr not in cls.__fields__ and attr not in skip_attrs:
+        if value and attr not in cls.model_fields and attr not in skip_attrs:
             v["other"][attr] = value
     return v
 
@@ -164,22 +155,20 @@ class CollectionRef(BaseModel):
 
     """
 
-    id: int = Field(None, alias="$id")
+    id: int | None = Field(None, alias="$id")
 
 
 # We define the 3 "system" collections in the Raindrop environment:
-CollectionRef.All = CollectionRef(
-    **{"$id": 0},
-)  # Note: "all" here does NOT include Trash.
-CollectionRef.Trash = CollectionRef(**{"$id": -99})
-CollectionRef.Unsorted = CollectionRef(**{"$id": -1})
+SYSTEM_COLLECTION_ALL = CollectionRef(**{"$id": 0})
+SYSTEM_COLLECTION_TRASH = CollectionRef(**{"$id": -99})
+SYSTEM_COLLECTION_UNSORTED = CollectionRef(**{"$id": -1})
 
 
 class UserRef(BaseModel):
     """Represents a **reference** to `User` object."""
 
-    id: int = Field(None, alias="$id")
-    ref: str = Field(None, alias="$user")
+    id: int | None = Field(None, alias="$id")
+    ref: str | None = Field(None, alias="$user")
 
 
 class Access(BaseModel):
@@ -215,7 +204,7 @@ class Collection(BaseModel):
         Attributes in `other` are *NOT* OFFICIALLY SUPPORTED...use at your own risk!
     """
 
-    id: int = Field(None, alias="_id")
+    id: int | None = Field(None, alias="_id")
     title: str
     user: UserRef
 
@@ -237,12 +226,12 @@ class Collection(BaseModel):
     other: dict[str, Any] = {}
 
     # Used to convert parent reference's of sub-collections to simply id's of the respective parent collection.
-    _extract_parent_id = validator("parent", pre=True, allow_reuse=True)(
-        _resolve_parent_reference,
-    )
+    @validator("parent", pre=True, allow_reuse=True)
+    def _extract_parent_id(cls, v):
+        return _resolve_parent_reference(v)
 
-    @root_validator(pre=True)
-    # FIXME: noqa here is because work-around in https://github.com/pydantic/pydantic/issues/568 doesn't work!
+    @model_validator(mode="before")
+    @classmethod
     def _validator(cls, v):  # noqa: N805
         """Gather all non-recognised/unofficial attributes into a single attribute."""
         return _collect_other_attributes(cls, v)
@@ -459,7 +448,7 @@ class Group(BaseModel):
     title: str
     hidden: bool
     sort: NonNegativeInt
-    collectionids: list[int] = Field(None, alias="collections")
+    collectionids: list[int] | None = Field(None, alias="collections")
 
 
 class UserConfig(BaseModel):
@@ -469,7 +458,7 @@ class UserConfig(BaseModel):
         Attributes in `other` are NOT OFFICIALLY SUPPORTED!.
     """
 
-    broken_level: BrokenLevel = None
+    broken_level: BrokenLevel | None = None
     font_color: FontColor | None = None
     font_size: int | None = None
     lang: str | None = None
@@ -482,11 +471,14 @@ class UserConfig(BaseModel):
     other: dict[str, Any] = {}
 
     @validator("last_collection", pre=True)
-    def cast_last_collection_to_ref(cls, v):  # noqa: N805
+    def cast_last_collection_to_ref(cls, v):  # noqa: N805, pylint: disable=no-self-argument
         """Cast last_collection provided as a raw int to a valid CollectionRef."""
-        return CollectionRef(**{"$id": v})
+        if v is not None:
+            return CollectionRef(**{"$id": v})
+        return None
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def _validator_other_attributes(cls, v):  # noqa: N805
         """Gather all non-recognised/unofficial attributes into a single attribute."""
         return _collect_other_attributes(cls, v)
@@ -497,17 +489,17 @@ class UserFiles(BaseModel):
 
     used: int
     size: PositiveInt
-    last_checkpoint: datetime = Field(None, alias="lastCheckpoint")
+    last_checkpoint: datetime | None = Field(None, alias="lastCheckpoint")
 
 
 class User(BaseModel):
     """Raindrop User model."""
 
-    id: int = Field(None, alias="_id")
+    id: int | None = Field(None, alias="_id")
     email: EmailStr
     email_md5: str | None = Field(None, alias="email_MD5")
     files: UserFiles
-    full_name: str = Field(None, alias="fullName")
+    full_name: str | None = Field(None, alias="fullName")
     groups: list[Group]
     password: bool
     pro: bool
@@ -536,23 +528,24 @@ class SystemCollection(BaseModel):
     a small set of simple "status" calls available from the Raindrop.io API, specifically `get_counts` and `get_meta`.
     """
 
-    id: int = Field(None, alias="_id")
+    id: int | None = Field(None, alias="_id")
     count: NonNegativeInt
     title: str | None
 
-    @root_validator(pre=False)
-    def _validator(cls, values):  # noqa: N805
+    @model_validator(mode="after")
+    def _validator(self) -> "SystemCollection":
         """Map the hard-coded id's of the System Collections to the descriptions used on the UI."""
         _titles = {
-            CollectionRef.Unsorted.id: "Unsorted",
-            CollectionRef.All.id: "All",
-            CollectionRef.Trash.id: "Trash",
+            SYSTEM_COLLECTION_UNSORTED.id: "Unsorted",
+            SYSTEM_COLLECTION_ALL.id: "All",
+            SYSTEM_COLLECTION_TRASH.id: "Trash",
         }
-        values["title"] = _titles.get(values["id"])
-        return values
+        if self.id is not None:
+            self.title = _titles.get(self.id)
+        return self
 
     @classmethod
-    def get_counts(cls, api: T_API) -> list[Collection]:
+    def get_counts(cls, api: T_API) -> list["SystemCollection"]:
         """Get the count of Raindrops in each of the 3 *system* collections."""
         items = api.get(URL.format(path="user/stats")).json()["items"]
         return [cls(**item) for item in items]
@@ -626,8 +619,8 @@ class Raindrop(BaseModel):
     """
 
     # "Main" fields (per https://developer.raindrop.io/v1/raindrops)
-    id: int = Field(None, alias="_id")
-    collection: Collection | CollectionRef = CollectionRef.Unsorted
+    id: int | None = Field(None, alias="_id")
+    collection: Collection | CollectionRef = SYSTEM_COLLECTION_UNSORTED
     cover: str | None
     created: datetime | None
     domain: str | None
@@ -650,7 +643,8 @@ class Raindrop(BaseModel):
     # It's unsafe to use them in your integration! They could be removed or renamed at any time."
     other: dict[str, Any] = {}
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def _validator(cls, v):  # noqa: N805
         """Gather all non-recognised/unofficial attributes into a single attribute."""
         return _collect_other_attributes(cls, v)
@@ -662,7 +656,7 @@ class Raindrop(BaseModel):
         return cls(**item)
 
     @classmethod
-    def cache(cls, api: T_API, id: int) -> requests.Response:
+    def get_cache(cls, api: T_API, id: int) -> requests.Response:
         """Return the requests on behalf of a permanent copy of the specified Raindrop."""
         # Note: In testing in 2024-01, while I was able to get a URL back in this response
         # (after a 307 redirect), the URL did NOT work against S3...(essentially an "item not
@@ -674,7 +668,7 @@ class Raindrop(BaseModel):
         cls,
         api: T_API,
         link: str,
-        collection: (Collection | CollectionRef, int) | None = None,
+        collection: Collection | CollectionRef | int | None = None,
         cover: str | None = None,
         excerpt: str | None = None,
         important: bool | None = None,
@@ -741,7 +735,7 @@ class Raindrop(BaseModel):
         if collection is not None:
             # <collection> arg could be **either** an actual collection
             # or simply an int collection "id" already, handle either:
-            if isinstance(collection, Collection | CollectionRef):
+            if isinstance(collection, (Collection, CollectionRef)):
                 args["collection"] = {"$id": collection.id}
             else:
                 args["collection"] = {"$id": collection}
@@ -755,7 +749,7 @@ class Raindrop(BaseModel):
         api: T_API,
         path: Path,
         content_type: str,
-        collection: (Collection | CollectionRef, int) | None = CollectionRef.Unsorted,
+        collection: Collection | CollectionRef | int | None = SYSTEM_COLLECTION_UNSORTED,
         tags: list[str] | None = None,
         title: str | None = None,
     ) -> Raindrop:
@@ -795,7 +789,7 @@ class Raindrop(BaseModel):
 
         # NOTE: "put_file" arguments and structure here confirmed through communication
         #       with RustemM on 2022-11-29 and his subsequent update to API docs.
-        if isinstance(collection, Collection | CollectionRef):
+        if isinstance(collection, (Collection, CollectionRef)):
             data = {"collectionId": str(collection.id)}
         else:
             data = {"collectionId": str(collection)}
@@ -825,7 +819,7 @@ class Raindrop(BaseModel):
         cls,
         api: T_API,
         id: int,
-        collection: (Collection | CollectionRef, int) | None = None,
+        collection: Collection | CollectionRef | int | None = None,
         cover: str | None = None,
         excerpt: str | None = None,
         important: bool | None = None,
@@ -890,7 +884,7 @@ class Raindrop(BaseModel):
         if collection is not None:
             # <collection> arg could be **either** an actual collection
             # or simply an int collection "id" already, handle either:
-            if isinstance(collection, Collection | CollectionRef):
+            if isinstance(collection, (Collection, CollectionRef)):
                 args["collection"] = collection.id
             else:
                 args["collection"] = collection
@@ -917,7 +911,7 @@ class Raindrop(BaseModel):
     def _search_paged(
         cls,
         api: T_API,
-        collection: CollectionRef = CollectionRef.All,
+        collection: CollectionRef | None = SYSTEM_COLLECTION_ALL,
         search: str | None = None,
         page: int = 0,
         perpage: int = 50,
@@ -928,10 +922,13 @@ class Raindrop(BaseModel):
         search reflecting paging (while the primary ``search`` method below hides it
         completely).
         """
-        params = {"perpage": perpage, "page": page}
+        params: dict[str, Any] = {"perpage": perpage, "page": page}
         if search:
             params["search"] = search
-        url = URL.format(path=f"raindrops/{collection.id}")
+        if collection:
+            url = URL.format(path=f"raindrops/{collection.id}")
+        else:
+            url = URL.format(path="raindrops/0")  # Default to all
         results = api.get(url, params=params).json()
         return [cls(**item) for item in results["items"]]
 
@@ -939,7 +936,7 @@ class Raindrop(BaseModel):
     def search(
         cls,
         api: T_API,
-        collection: Collection | CollectionRef = CollectionRef.All,
+        collection: Collection | CollectionRef | int | None = SYSTEM_COLLECTION_ALL,
         search: str | None = None,
     ) -> list[Raindrop]:
         """Search for Raindrops.
@@ -948,7 +945,7 @@ class Raindrop(BaseModel):
             api: API Handle to use for the request.
 
             collection: Optional, ``Collection`` (or ``CollectionRef``) to search over.
-                Defaults to ``CollectionRef.All``.
+                Defaults to ``SYSTEM_COLLECTION_ALL``.
 
             search: Optional, search string to search Raindrops for (see
                 `Raindrop.io Search Help <https://help.raindrop.io/using-search#operators>`_ for more information.
@@ -958,12 +955,22 @@ class Raindrop(BaseModel):
         """
         page = 0
         results = list()
-        while raindrops := Raindrop._search_paged(
-            api,
-            collection,
-            page=page,
-            search=search,
-        ):
+        if isinstance(collection, int):
+            collection_ref = CollectionRef(**{"$id": collection})
+        elif isinstance(collection, Collection):
+            collection_ref = CollectionRef(**{"$id": collection.id})
+        else:
+            collection_ref = collection
+
+        if collection_ref:
+            while raindrops := Raindrop._search_paged(
+                api,
+                collection_ref,
+                page=page,
+                search=search,
+            ):
+                results.extend(raindrops)
+                page += 1
             results.extend(raindrops)
             page += 1
         return results
@@ -972,7 +979,7 @@ class Raindrop(BaseModel):
 class Tag(BaseModel):
     """Represents existing Tags, either all or just a specific collection."""
 
-    tag: str = Field(None, alias="_id")
+    tag: str | None = Field(None, alias="_id")
     count: int
 
     @classmethod
